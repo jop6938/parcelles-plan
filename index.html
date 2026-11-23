@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Parcelles de Plan</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2e6b3a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Parcelles Plan">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root{--bg:#fbfaf7;--fg:#222;--muted:#6b6b6b;--line:#ddd8cc;--accent:#2e6b3a}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;font:15px/1.4 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+  #app{display:flex;height:100%}
+  #panel{width:350px;max-width:100%;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);z-index:500}
+  #map{flex:1;min-width:0}
+  header{padding:12px 14px 8px;border-bottom:1px solid var(--line)}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--muted);font-size:13px}
+  #tools{padding:8px 14px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+  #tools input[type=search]{flex:1 1 100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font:inherit}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border:1px solid var(--line);border-radius:99px;font-size:12.5px;cursor:pointer;background:#fff;user-select:none}
+  .chip.off{opacity:.4}
+  .dot{width:11px;height:11px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.25)}
+  #list{flex:1;overflow:auto}
+  .it{padding:8px 14px;border-bottom:1px solid #eee9de;cursor:pointer;display:flex;gap:9px;align-items:flex-start}
+  .it:hover{background:#f2efe6}
+  .it b{white-space:nowrap}
+  .it small{color:var(--muted)}
+  .it.miss{background:#fff1f0}
+  footer{padding:8px 14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+  footer summary{cursor:pointer;padding:2px 0}
+  .tl{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  footer button,footer label{font:inherit;padding:4px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;color:var(--fg)}
+  #msg{margin:8px 14px 0;padding:8px 10px;border-radius:8px;background:#fff7e0;border:1px solid #ecd9a0;font-size:13px;display:none}
+  #msg.err{background:#fff1f0;border-color:#e5b4ae}
+  .geo{width:34px;height:34px;font-size:18px;line-height:30px;background:#fff;border:2px solid rgba(0,0,0,.2);border-radius:4px;cursor:pointer;padding:0}
+  .geo.on{background:#1e63c9;color:#fff}
+  #gps{position:fixed;left:10px;bottom:28px;z-index:900;max-width:calc(100% - 20px);background:rgba(255,255,255,.95);border:1px solid #999;border-radius:8px;padding:7px 10px;font-size:13.5px;display:none;cursor:pointer;box-shadow:0 1px 5px rgba(0,0,0,.3)}
+  #toggle{display:none}
+  .lbl{display:inline-block;transform:translate(-50%,-50%);background:rgba(255,255,255,.82);border:1px solid #888;border-radius:4px;padding:0 3px;font:600 11px/15px system-ui;white-space:nowrap;color:#333;text-align:center;pointer-events:none}
+  .lbl.mine{background:#fff;border:2px solid #111;font-size:12.5px;line-height:17px;color:#000}
+  @media (max-width:760px){
+    #app{flex-direction:column-reverse}
+    #panel{width:100%;height:42vh;border-right:0;border-top:1px solid var(--line)}
+    #app.collapsed #panel{height:46px;overflow:hidden}
+    #toggle{display:block;position:absolute;right:10px;top:8px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:2px 9px;font:inherit}
+    header{position:relative;padding-right:60px}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <header>
+      <button id="toggle" type="button">▼</button>
+      <h1>Plan (38590) - parcelles</h1>
+      <div class="sub" id="summary">Chargement du cadastre…</div>
+    </header>
+    <div id="msg"></div>
+    <div id="tools">
+      <input type="search" id="q" placeholder="Rechercher : A 664, Adret, pré…">
+      <span id="legend"></span>
+    </div>
+    <div id="list"></div>
+    <footer>
+      <details>
+        <summary>Outils</summary>
+        <div class="tl">
+          <label>Charger un CSV<input type="file" id="csvfile" accept=".csv,.txt" hidden></label>
+          <button type="button" id="exportcsv">Exporter en CSV</button>
+          <button type="button" id="sharelink">Lien de partage</button>
+          <button type="button" id="offline">Zone hors-ligne</button>
+          <label>Cadastre (GeoJSON)<input type="file" id="gjfile" accept=".json,.geojson,.gz" hidden></label>
+          <button type="button" id="resetlist">Vider la liste</button>
+        </div>
+      </details>
+    </footer>
+  </div>
+  <div id="map"></div>
+  <div id="gps"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+/* ============ À MODIFIER ============ */
+const COMMUNE = { nom: 'Plan', insee: '38308' };
+
+// Colonnes du CSV : section;numero;lieu_dit;surface_m2;nature
+let MES = [];   // la liste est chargée par CSV ou par lien de partage, elle n'est pas écrite dans l'application
+const MES_DEFAUT = MES;
+const CLE_STOCK = 'plan_parcelles_csv';
+try { const s = localStorage.getItem(CLE_STOCK); if (s) { const a = JSON.parse(s); if (Array.isArray(a) && a.length) MES = a; } } catch(e){}
+/* ==================================== */
+
+const NATURES = [
+  { id:'pre',    label:'Pré / pâture', color:'#43a047', test:n=>/^PRE/.test(n) },
+  { id:'terre',  label:'Terre',        color:'#e08a1e', test:n=>/^TERRE/.test(n) },
+  { id:'verger', label:'Verger',       color:'#d81b60', test:n=>/^VERGER/.test(n) },
+  { id:'taillis',label:'Taillis',      color:'#1b5e3a', test:n=>/^TAILLIS/.test(n) },
+  { id:'futaie', label:'Futaie',       color:'#00897b', test:n=>/^FUTAIE/.test(n) },
+  { id:'sol',    label:'Sol / bâti',   color:'#757575', test:n=>/^(SOL|BATI)/.test(n) },
+  { id:'autre',  label:'Autre',        color:'#1e63c9', test:()=>true }
+];
+const natureOf = s => NATURES.find(x => x.test(String(s||'').toUpperCase().trim()));
+const norm = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+const keyOf = (s,n) => String(s).toUpperCase().trim() + '-' + parseInt(n,10);
+const fmtSurf = m2 => { const h=Math.floor(m2/10000), a=Math.floor((m2%10000)/100), c=m2%100;
+  return (h?h+' ha ':'')+(a||h?a+' a ':'')+c+' ca'; };
+const $ = id => document.getElementById(id);
+
+/* ---------- Carte ---------- */
+const map = L.map('map', { preferCanvas:true, zoomControl:true, maxZoom:20 }).setView([45.31, 5.31], 13);
+const ignTpl = (layer, fmt) => 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER='+layer+
+  '&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT='+fmt;
+const TPL = {
+  'Photo aérienne (IGN)': ignTpl('ORTHOIMAGERY.ORTHOPHOTOS','image/jpeg'),
+  'Plan IGN': ignTpl('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2','image/png'),
+  'OpenStreetMap': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+};
+const baseLayers = {};
+for (const [name, url] of Object.entries(TPL))
+  baseLayers[name] = L.tileLayer(url, { maxZoom:20, maxNativeZoom:19, attribution: name==='OpenStreetMap' ? '© OpenStreetMap' : '© IGN Géoplateforme' });
+let curBase = 'Photo aérienne (IGN)';
+map.on('baselayerchange', e => { curBase = e.name; });
+baseLayers['Photo aérienne (IGN)'].addTo(map);
+L.control.layers(baseLayers, null, { collapsed:true }).addTo(map);
+L.control.scale({ imperial:false }).addTo(map);
+
+/* ---------- Données cadastre ---------- */
+let allLayer = null, mineLayer = null;
+const byKey = new Map();           // clé -> {feature, layer(all)}
+let labelsAll = L.layerGroup().addTo(map), labelsMine = L.layerGroup().addTo(map);
+let cadastreFeatures = [];
+const hiddenNat = new Set();
+
+function parseFeature(f){
+  const p = f.properties || {};
+  let sec = p.section, num = p.numero;
+  if (p.id && p.id.length >= 14) { sec = p.id.slice(8,10).replace(/^0/,''); num = p.id.slice(10); }
+  else if (sec) sec = String(sec).replace(/^0/,'');
+  return { sec: String(sec||'').toUpperCase(), num: parseInt(num,10), contenance: p.contenance };
+}
+
+async function readGeo(buf){
+  const u8 = new Uint8Array(buf);
+  if (u8[0]===0x1f && u8[1]===0x8b){
+    const ds = new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip')));
+    return JSON.parse(await ds.text());
+  }
+  return JSON.parse(new TextDecoder().decode(buf));
+}
+
+async function fetchCadastre(){
+  const i = COMMUNE.insee;
+  const urls = [
+    `https://cadastre.data.gouv.fr/bundler/cadastre-etalab/communes/${i}/geojson/parcelles`,
+    `https://cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/communes/${i.slice(0,2)}/${i}/cadastre-${i}-parcelles.json.gz`
+  ];
+  let lastErr;
+  for (const u of urls){
+    try{
+      const r = await fetch(u);
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return await readGeo(await r.arrayBuffer());
+    }catch(e){ lastErr = e; console.warn('Échec', u, e); }
+  }
+  throw lastErr;
+}
+
+function showMsg(txt, err){ const m=$('msg'); m.textContent=txt; m.className=err?'err':''; m.style.display=txt?'block':'none'; }
+
+function buildMap(gj){
+  if (allLayer) map.removeLayer(allLayer);
+  if (mineLayer) map.removeLayer(mineLayer);
+  byKey.clear(); cadastreFeatures = [];
+  // préfixe 000 prioritaire en cas de doublon
+  const feats = gj.features.filter(f => f.geometry);
+  feats.forEach(f => { f._k = parseFeature(f); });
+  allLayer = L.geoJSON(feats, {
+    style: { color:'#fff', weight:.8, opacity:.75, fillOpacity:0, fillColor:'#000' },
+    onEachFeature: (f, layer) => {
+      const k = f._k, key = keyOf(k.sec,k.num);
+      cadastreFeatures.push({ key, k, layer, geom:f.geometry });
+      if (!byKey.has(key) || (f.properties.prefixe||'000')==='000') byKey.set(key, { f, layer });
+      layer.on('click', () => { if(!mineKeys.has(key)) layer.bindPopup(`<b>Section ${k.sec} – n° ${k.num}</b><br>${k.contenance?fmtSurf(k.contenance):''}`).openPopup(); });
+    }
+  }).addTo(map);
+  drawMine();
+  refreshLabels();
+}
+
+let mineKeys = new Set();
+const corners = L.layerGroup();
+const polysOf = g => g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+const vertsOf = g => polysOf(g).flatMap(rings => rings[0].slice(0,-1).map(c => L.latLng(c[1], c[0])));
+function drawMine(){
+  if (mineLayer) { map.removeLayer(mineLayer); mineLayer = null; }
+  labelsMine.clearLayers();
+  corners.clearLayers();
+  mineKeys = new Set(MES.map(p => keyOf(p.section,p.numero)));
+  const feats = [], missing = [];
+  MES.forEach(p => {
+    const hit = byKey.get(keyOf(p.section,p.numero));
+    p._layer = null; p._hit = hit || null; p._verts = null;
+    if (!hit) { missing.push(p); return; }
+    p._verts = vertsOf(hit.f.geometry);
+    p._verts.forEach(v => corners.addLayer(L.circleMarker(v, { radius:3.5, color:'#000', weight:1.5, fillColor:'#fff', fillOpacity:1, interactive:false })));
+    feats.push({ type:'Feature', geometry:hit.f.geometry, properties:{ key:keyOf(p.section,p.numero) } });
+  });
+  const pByKey = new Map(MES.map(p => [keyOf(p.section,p.numero), p]));
+  mineLayer = L.geoJSON(feats, {
+    filter: f => !hiddenNat.has(natureOf(pByKey.get(f.properties.key).nature).id),
+    style: f => { const c = natureOf(pByKey.get(f.properties.key).nature).color;
+      return { color:c, weight:2.5, opacity:1, fillColor:c, fillOpacity:.5 }; },
+    onEachFeature: (f, layer) => {
+      const p = pByKey.get(f.properties.key);
+      p._layer = layer;
+      layer.bindPopup(popupHtml(p));
+      const c = layer.getBounds().getCenter();
+      const m = L.marker(c, { interactive:false, icon:L.divIcon({ className:'', html:`<div class="lbl mine">${p.section} ${p.numero}</div>`, iconSize:[0,0] }) });
+      m._nat = natureOf(p.nature).id;
+      labelsMine.addLayer(m);
+    }
+  }).addTo(map);
+  mineLayer.bringToFront();
+  const nEcarts = MES.filter(p => ecart(p)).length;
+  const tot = MES.reduce((s,p)=>s+p.surface,0);
+  $('summary').textContent = `${MES.length} parcelles · ${(tot/10000).toFixed(2).replace('.',',')} ha`
+    + (missing.length ? ` · ${missing.length} introuvable(s)` : '')
+    + (nEcarts ? ` · ⚠ ${nEcarts} surface(s) différente(s) du cadastre` : '');
+  if (missing.length) showMsg('Introuvables dans le cadastre : ' + missing.map(p=>p.section+' '+p.numero).join(', ')
+    + '. Vérifiez la section et le numéro (ou la commune).', true);
+  else showMsg('', false);
+  renderList(missing);
+  renderLegend();
+  if (feats.length && !map._fitted){ map.fitBounds(mineLayer.getBounds().pad(.1)); map._fitted = true; }
+  else if (!feats.length && !map._fitted && allLayer){ map.fitBounds(allLayer.getBounds()); map._fitted = true; }
+  if (!MES.length) showMsg('Aucune parcelle pour l\'instant. Ouvrez le lien de partage reçu, ou chargez un CSV (Outils → Charger un CSV).', false);
+  refreshLabels();
+}
+
+// surface du cadastre si elle diffère de la liste (tolérance : 2 m² ou 0,5 %), sinon 0
+function ecart(p){
+  const cad = p._hit && p._hit.f.properties.contenance;
+  return cad && Math.abs(cad - p.surface) > Math.max(2, p.surface*0.005) ? cad : 0;
+}
+function popupHtml(p){
+  const cad = ecart(p);
+  let s = `<b>Section ${p.section} – n° ${p.numero}</b><br>${p.lieudit}<br>${p.nature}<br>Surface (ma liste) : ${fmtSurf(p.surface)}`;
+  if (cad) s += `<br><b style="color:#b3261e">⚠ cadastre : ${fmtSurf(cad)}</b>`;
+  return s;
+}
+
+function refreshLabels(){
+  const z = map.getZoom();
+  if (z >= 18) { if (!map.hasLayer(corners)) map.addLayer(corners); } else if (map.hasLayer(corners)) map.removeLayer(corners);
+  // mes parcelles : étiquettes dès z14, sauf nature masquée
+  labelsMine.eachLayer(m => {
+    const show = z >= 14 && !hiddenNat.has(m._nat);
+    const el = m.getElement && m.getElement();
+    if (el) el.style.display = show ? '' : 'none';
+  });
+  // toutes les parcelles : étiquettes dès z17, dans la vue seulement
+  labelsAll.clearLayers();
+  if (z < 17 || !cadastreFeatures.length) return;
+  const b = map.getBounds(); let n = 0;
+  for (const c of cadastreFeatures){
+    if (mineKeys.has(c.key)) continue;
+    const lb = c.layer.getBounds();
+    if (!b.intersects(lb)) continue;
+    labelsAll.addLayer(L.marker(lb.getCenter(), { interactive:false,
+      icon:L.divIcon({ className:'', html:`<div class="lbl">${c.k.sec} ${c.k.num}</div>`, iconSize:[0,0] }) }));
+    if (++n > 500) break;
+  }
+}
+map.on('zoomend moveend', refreshLabels);
+
+/* ---------- Panneau ---------- */
+function renderLegend(){
+  const used = [...new Set(MES.map(p => natureOf(p.nature).id))];
+  $('legend').innerHTML = NATURES.filter(n => used.includes(n.id)).map(n =>
+    `<span class="chip ${hiddenNat.has(n.id)?'off':''}" data-n="${n.id}"><span class="dot" style="background:${n.color}"></span>${n.label}</span>`).join(' ');
+  $('legend').querySelectorAll('.chip').forEach(ch => ch.onclick = () => {
+    const id = ch.dataset.n; hiddenNat.has(id) ? hiddenNat.delete(id) : hiddenNat.add(id);
+    drawMine();
+  });
+}
+
+function renderList(missing){
+  const q = norm($('q').value);
+  const miss = new Set((missing||MES.filter(p=>!p._hit)).map(p=>keyOf(p.section,p.numero)));
+  const rows = MES.filter(p => !q || norm(`${p.section} ${p.numero} ${p.section}${p.numero} ${p.lieudit} ${p.nature}`).includes(q))
+    .sort((a,b)=> a.lieudit.localeCompare(b.lieudit,'fr') || a.section.localeCompare(b.section) || a.numero-b.numero);
+  $('list').innerHTML = rows.map((p,i) => {
+    const n = natureOf(p.nature);
+    return `<div class="it ${miss.has(keyOf(p.section,p.numero))?'miss':''}" data-k="${keyOf(p.section,p.numero)}">
+      <span class="dot" style="background:${n.color};margin-top:5px"></span>
+      <div><b>${p.section} ${p.numero}</b> <small>${p.lieudit}</small><br><small>${p.nature.toLowerCase()} · ${fmtSurf(p.surface)}</small>${ecart(p)?`<br><small style="color:#b3261e"><b>⚠ cadastre : ${fmtSurf(ecart(p))}</b></small>`:''}</div></div>`;
+  }).join('') || '<div class="it"><small>Aucune parcelle dans la liste.</small></div>';
+  $('list').querySelectorAll('.it[data-k]').forEach(el => el.onclick = () => {
+    const p = MES.find(x => keyOf(x.section,x.numero) === el.dataset.k);
+    if (p && p._layer){
+      map.fitBounds(p._layer.getBounds().pad(.6), { maxZoom:18 });
+      p._layer.openPopup(p._layer.getBounds().getCenter());
+      if (innerWidth <= 760) $('app').classList.add('collapsed');
+    }
+  });
+}
+$('q').addEventListener('input', () => renderList());
+$('toggle').onclick = () => { const a=$('app'); a.classList.toggle('collapsed'); $('toggle').textContent = a.classList.contains('collapsed')?'▲':'▼'; setTimeout(()=>map.invalidateSize(),50); };
+
+/* ---------- Chargement de fichiers ---------- */
+function parseCSV(text){
+  const lines = text.replace(/^﻿/,'').split(/\r?\n/).filter(l=>l.trim());
+  if (lines.length < 2) throw new Error('CSV vide');
+  const sep = (lines[0].match(/;/g)||[]).length >= (lines[0].match(/,/g)||[]).length ? ';' : ',';
+  const head = lines[0].split(sep).map(norm);
+  const col = f => head.findIndex(f);
+  const iS = col(h=>h.startsWith('section')), iN = col(h=>h.startsWith('num')||h.includes('parcelle')),
+        iL = col(h=>h.includes('lieu')), iM = col(h=>h.includes('m2')||h.includes('surface')), iT = col(h=>h.includes('nature'));
+  if (iS<0 || iN<0) throw new Error('Colonnes "section" et "numero" introuvables');
+  return lines.slice(1).map(l => { const c = l.split(sep).map(x=>x.trim());
+    return { section:c[iS], numero:parseInt(c[iN],10), lieudit:iL>=0?c[iL]:'', surface:iM>=0?parseInt(c[iM],10)||0:0, nature:iT>=0?c[iT]:'' };
+  }).filter(p => p.section && p.numero);
+}
+$('csvfile').onchange = async e => {
+  try {
+    MES = parseCSV(await e.target.files[0].text()); map._fitted = false; drawMine();
+    let saved = true;
+    try { localStorage.setItem(CLE_STOCK, JSON.stringify(MES.map(p => ({ section:p.section, numero:p.numero, lieudit:p.lieudit, surface:p.surface, nature:p.nature })))); }
+    catch(e2){ saved = false; }
+    if ($('msg').style.display === 'none')
+      showMsg(MES.length + ' parcelles chargées' + (saved ? ' et mémorisées sur cet appareil.' : ' (mémorisation impossible dans ce navigateur).'), false);
+  } catch(err){ showMsg('CSV illisible : '+err.message, true); }
+  e.target.value = '';
+};
+$('resetlist').onclick = () => {
+  if (MES.length && !confirm('Vider la liste de parcelles de cet appareil ?')) return;
+  try { localStorage.removeItem(CLE_STOCK); } catch(e){}
+  MES = MES_DEFAUT; map._fitted = false; drawMine();
+};
+$('gjfile').onchange = async e => {
+  try { buildMap(await readGeo(await e.target.files[0].arrayBuffer())); }
+  catch(err){ showMsg('Fichier cadastre illisible : '+err.message, true); }
+};
+
+
+/* ---------- Position GPS ---------- */
+const inRing = (r,x,y) => { let c=false; for (let i=0,j=r.length-1;i<r.length;j=i++){
+  const xi=r[i][0], yi=r[i][1], xj=r[j][0], yj=r[j][1];
+  if ((yi>y)!==(yj>y) && x < (xj-xi)*(y-yi)/(yj-yi)+xi) c=!c; } return c; };
+const inGeom = (g,x,y) => polysOf(g).some(rings => inRing(rings[0],x,y) && !rings.slice(1).some(h => inRing(h,x,y)));
+const DIRS = ['nord','nord-est','est','sud-est','sud','sud-ouest','ouest','nord-ouest'];
+function bearing(a,b){
+  const r = Math.PI/180, y = Math.sin((b.lng-a.lng)*r)*Math.cos(b.lat*r),
+        x = Math.cos(a.lat*r)*Math.sin(b.lat*r) - Math.sin(a.lat*r)*Math.cos(b.lat*r)*Math.cos((b.lng-a.lng)*r);
+  const deg = (Math.atan2(y,x)/r + 360) % 360;
+  return DIRS[Math.round(deg/45) % 8];
+}
+let watchId = null, meDot = null, meCircle = null, meLine = null, firstFix = true, lastLL = null;
+
+function onPos(pos){
+  const { latitude:lat, longitude:lng, accuracy } = pos.coords;
+  const ll = L.latLng(lat, lng); lastLL = ll;
+  if (!meDot){
+    meCircle = L.circle(ll, { radius:accuracy, color:'#1e63c9', weight:1, fillOpacity:.12, interactive:false }).addTo(map);
+    meDot = L.circleMarker(ll, { radius:8, color:'#fff', weight:3, fillColor:'#1e63c9', fillOpacity:1, interactive:false }).addTo(map);
+  } else { meCircle.setLatLng(ll); meCircle.setRadius(accuracy); meDot.setLatLng(ll); }
+  if (firstFix){ map.setView(ll, Math.max(map.getZoom(), 18)); firstFix = false; }
+
+  // parcelle sous mes pieds
+  let here = null;
+  for (const c of cadastreFeatures){
+    if (!c.layer.getBounds().contains(ll)) continue;
+    if (inGeom(c.geom, lng, lat)) { here = c; break; }
+  }
+  const mine = here && MES.find(p => keyOf(p.section,p.numero) === here.key);
+  // angle (borne probable) le plus proche : dans ma parcelle, sinon parmi toutes mes parcelles
+  const cand = mine ? [mine] : MES.filter(p => p._verts);
+  let best = null;
+  for (const p of cand) for (const v of p._verts){
+    const d = ll.distanceTo(v); if (!best || d < best.d) best = { d, v, p };
+  }
+  let l1 = '±' + Math.round(accuracy) + ' m · ' + (here
+    ? 'Sur ' + here.k.sec + ' ' + here.k.num + (mine ? ' ★ ' + mine.lieudit.toLowerCase() : ' (pas à nous)')
+    : 'Hors cadastre');
+  let l2 = '';
+  if (best){
+    l2 = '<br>Angle le plus proche : <b>' + Math.round(best.d) + ' m</b> au ' + bearing(ll, best.v)
+       + ' (' + best.p.section + ' ' + best.p.numero + ')';
+    if (meLine) meLine.setLatLngs([ll, best.v]);
+    else meLine = L.polyline([ll, best.v], { color:'#1e63c9', weight:2, dashArray:'6 6', interactive:false }).addTo(map);
+  }
+  const box = $('gps'); box.innerHTML = l1 + l2 + (accuracy > 15 ? '<br><small>⚠ précision faible (sous couvert, attendre un peu)</small>' : '');
+  box.style.display = 'block';
+}
+function onGeoErr(e){
+  stopGeo();
+  showMsg(e.code === 1 ? 'Localisation refusée : autorisez-la pour ce site dans le navigateur.'
+    : 'Position indisponible (' + e.message + ').', true);
+}
+function stopGeo(){
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null; lastLL = null;
+  [meDot, meCircle, meLine].forEach(l => l && map.removeLayer(l)); meDot = meCircle = meLine = null;
+  $('gps').style.display = 'none'; document.querySelector('.geo').classList.remove('on');
+}
+function toggleGeo(){
+  if (watchId !== null) return stopGeo();
+  if (!navigator.geolocation) return showMsg('Ce navigateur ne gère pas la géolocalisation.', true);
+  firstFix = true; document.querySelector('.geo').classList.add('on');
+  watchId = navigator.geolocation.watchPosition(onPos, onGeoErr, { enableHighAccuracy:true, maximumAge:2000, timeout:30000 });
+}
+const GeoCtl = L.Control.extend({ onAdd(){
+  const b = L.DomUtil.create('button', 'geo'); b.type = 'button'; b.textContent = '📍'; b.title = 'Ma position';
+  L.DomEvent.disableClickPropagation(b); b.onclick = toggleGeo; return b; } });
+new GeoCtl({ position:'topleft' }).addTo(map);
+$('gps').onclick = () => { if (lastLL) map.setView(lastLL, Math.max(map.getZoom(), 18)); };
+
+/* ---------- Export, partage, hors-ligne ---------- */
+const toCSV = () => 'section;numero;lieu_dit;surface_m2;nature\n' + MES.map(p =>
+  [p.section, p.numero, String(p.lieudit).replace(/;/g,','), p.surface, String(p.nature).replace(/;/g,',')].join(';')).join('\n') + '\n';
+const b64u = u8 => { let s=''; u8.forEach(b => s += String.fromCharCode(b)); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); };
+async function packList(){
+  const cs = new Blob([toCSV()]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return b64u(new Uint8Array(await new Response(cs).arrayBuffer()));
+}
+async function unpackList(s){
+  const bin = atob(s.replace(/-/g,'+').replace(/_/g,'/'));
+  const ds = new Blob([Uint8Array.from(bin, c => c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Response(ds).text();
+}
+function saveList(){
+  try { localStorage.setItem(CLE_STOCK, JSON.stringify(MES.map(p => ({ section:p.section, numero:p.numero, lieudit:p.lieudit, surface:p.surface, nature:p.nature })))); return true; }
+  catch(e){ return false; }
+}
+async function loadFromHash(){
+  if (!location.hash.startsWith('#d=')) return;
+  try {
+    const list = parseCSV(await unpackList(location.hash.slice(3)));
+    if (list.length){ MES = list; saveList(); }
+  } catch(e){ console.warn('Lien de partage illisible', e); }
+  history.replaceState(null, '', location.pathname + location.search);
+}
+$('exportcsv').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + toCSV()], { type:'text/csv' }));
+  a.download = 'parcelles.csv'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+$('sharelink').onclick = async () => {
+  if (!MES.length) return showMsg('La liste est vide : rien à partager.', true);
+  const url = location.origin + location.pathname + '#d=' + await packList();
+  try { if (navigator.share) { await navigator.share({ title:'Parcelles de Plan', text:'Ouvrir pour charger la liste des parcelles :', url }); return; } } catch(e){ if (e.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(url); showMsg('Lien copié. Il contient la liste des parcelles : ne l\'envoyez qu\'à la famille.', false); }
+  catch(e){ prompt('Copiez ce lien (il contient la liste des parcelles) :', url); }
+};
+
+const tileXY = (lat, lng, z) => { const n = 2**z, r = lat*Math.PI/180;
+  return [ Math.floor((lng+180)/360*n), Math.floor((1 - Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n) ]; };
+$('offline').onclick = async () => {
+  if (curBase === 'OpenStreetMap') return showMsg('Choisissez la photo aérienne ou le plan IGN (le téléchargement en masse n\'est pas permis pour OpenStreetMap).', true);
+  if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return showMsg('Le mode hors-ligne n\'est pas encore actif : rechargez la page une fois (en https), puis réessayez.', true);
+  const pts = MES.flatMap(p => p._verts || []);
+  let s, w, n, e;
+  if (pts.length){ s = Math.min(...pts.map(v=>v.lat)); n = Math.max(...pts.map(v=>v.lat)); w = Math.min(...pts.map(v=>v.lng)); e = Math.max(...pts.map(v=>v.lng)); }
+  else { const b = map.getBounds(); s = b.getSouth(); n = b.getNorth(); w = b.getWest(); e = b.getEast(); }
+  const pad = 0.0015; s -= pad; w -= pad; n += pad; e += pad;
+  const count = zs => zs.reduce((acc,z) => { const [x0,y1] = tileXY(s,w,z), [x1,y0] = tileXY(n,e,z); return acc + (x1-x0+1)*(y1-y0+1); }, 0);
+  let zs = [15,16,17,18]; if (count(zs) > 5000) zs = [15,16,17];
+  const total = count(zs);
+  if (!confirm(`Télécharger ${total} tuiles (environ ${Math.round(total*(curBase.startsWith('Photo')?28:12)/1024)} Mo) pour « ${curBase} » autour de vos parcelles, zooms ${zs[0]} à ${zs[zs.length-1]} ?`)) return;
+  const urls = [];
+  for (const z of zs){ const [x0,y1] = tileXY(s,w,z), [x1,y0] = tileXY(n,e,z);
+    for (let x=x0; x<=x1; x++) for (let y=y0; y<=y1; y++) urls.push(TPL[curBase].replace('{z}',z).replace('{x}',x).replace('{y}',y)); }
+  let done = 0, fail = 0, i = 0;
+  const worker = async () => { while (i < urls.length){ const u = urls[i++];
+    try { const r = await fetch(u); if (!r.ok) fail++; } catch(e){ fail++; }
+    if (++done % 20 === 0 || done === urls.length) showMsg(`Téléchargement hors-ligne : ${done} / ${urls.length}`, false); } };
+  await Promise.all(Array.from({ length:6 }, worker));
+  showMsg(fail > urls.length*0.2 ? `Terminé, mais ${fail} tuiles n'ont pas pu être téléchargées : réessayez avec une meilleure connexion.` : `Zone enregistrée pour le hors-ligne (${urls.length - fail} tuiles).`, fail > urls.length*0.2);
+};
+
+/* ---------- Démarrage ---------- */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+}
+(async () => {
+  await loadFromHash();
+  let gj;
+  try { gj = await fetchCadastre(); }
+  catch(err){
+    $('summary').textContent = 'Cadastre non chargé';
+    showMsg('Impossible de télécharger le cadastre de '+COMMUNE.nom+' ('+err.message+'). Vérifiez la connexion (le cadastre est mémorisé après un premier chargement réussi).', true);
+    renderList([]); renderLegend(); return;
+  }
+  try { buildMap(gj); } catch(err){ console.error(err); showMsg('Erreur d\'affichage : '+err.message, true); }
+})();
+</script>
+</body>
+</html>

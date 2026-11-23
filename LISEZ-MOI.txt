@@ -1,0 +1,28 @@
+PARCELLES DE PLAN - application installable (PWA)
+
+CONTENU
+  index.html, sw.js, manifest.webmanifest, icon-192.png, icon-512.png
+  Aucune donnee personnelle dans ces fichiers : la liste des parcelles
+  n'est PAS dedans. Elle se charge par CSV ou par lien de partage.
+
+PUBLIER (GitHub Pages, gratuit, https)
+  1. Creer un depot PUBLIC sur GitHub (ex. "parcelles-plan"), y deposer ces 5 fichiers
+     a la racine (LISEZ-MOI.txt est facultatif).
+  2. Settings > Pages > Source : "Deploy from a branch", branche main, dossier / (root).
+  3. Au bout d'une minute : https://<votre-compte>.github.io/parcelles-plan/
+
+PREMIERE UTILISATION (sur le PC, puis sur chaque telephone)
+  - Ouvrir l'adresse. Outils > Charger un CSV (parcelles.csv) : la liste est memorisee.
+  - Outils > Lien de partage : envoie un lien (WhatsApp, SMS, mail) qui charge la liste
+    en un clic sur un autre appareil. Le lien contient la liste : famille uniquement.
+  - Android (Chrome) : menu > "Installer l'application".
+    iPhone (Safari) : Partager > "Sur l'ecran d'accueil".
+    (sur iPhone, ouvrir le lien de partage DANS l'application installee)
+
+HORS-LIGNE (bois sans reseau)
+  - A la maison, en Wi-Fi : ouvrir l'application, choisir "Photo aerienne" ou "Plan IGN",
+    Outils > Zone hors-ligne > confirmer. Le cadastre est memorise des le premier chargement.
+  - Le GPS fonctionne sans reseau, la carte aussi si la zone a ete telechargee.
+
+SAUVEGARDE
+  Outils > Exporter en CSV : garder ce fichier avec les papiers de famille.
