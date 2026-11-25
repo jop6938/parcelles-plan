@@ -1,9 +1,9 @@
 /* Service worker : fonctionnement hors-ligne.
    - l'application elle-même : cache d'abord, mise à jour en arrière-plan
    - bibliothèque Leaflet : cache d'abord
-   - cadastre : réseau d'abord (6 s si une copie existe), sinon copie mémorisée
+   - cadastre (une copie par commune) et recherche de commune : réseau d'abord (6 s si une copie existe), sinon copie mémorisée
    - tuiles IGN / OSM : cache d'abord, ajout au fil de la navigation */
-const V = 'app-v1', LIBS = 'libs-v1', DATA = 'cadastre-v1', TILES = 'tuiles-v1';
+const V = 'app-v2', LIBS = 'libs-v1', DATA = 'cadastre-v1', TILES = 'tuiles-v1';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -53,6 +53,6 @@ self.addEventListener('fetch', e => {
   const u = new URL(req.url);
   if (u.origin === location.origin) return e.respondWith(appStaleWhileRevalidate(req));
   if (u.hostname === 'cdnjs.cloudflare.com') return e.respondWith(cacheFirst(req, LIBS));
-  if (u.hostname === 'cadastre.data.gouv.fr') return e.respondWith(dataNetworkFirst(req));
+  if (u.hostname === 'cadastre.data.gouv.fr' || u.hostname === 'geo.api.gouv.fr') return e.respondWith(dataNetworkFirst(req));
   if (u.hostname === 'data.geopf.fr' || u.hostname === 'tile.openstreetmap.org') return e.respondWith(cacheFirst(req, TILES, true));
 });

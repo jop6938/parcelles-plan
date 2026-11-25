@@ -1,7 +1,7 @@
 {
-  "name": "Parcelles de Plan",
+  "name": "Mes parcelles",
   "short_name": "Parcelles",
-  "description": "Carte du cadastre de Plan (Isère) avec les parcelles de la famille",
+  "description": "Carte du cadastre avec les parcelles de la famille",
   "lang": "fr",
   "start_url": "./index.html",
   "scope": "./",

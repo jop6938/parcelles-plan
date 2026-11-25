@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Parcelles de Plan</title>
+<title>Mes parcelles</title>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#2e6b3a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Parcelles Plan">
+<meta name="apple-mobile-web-app-title" content="Parcelles">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
@@ -59,7 +59,7 @@
   <div id="panel">
     <header>
       <button id="toggle" type="button">▼</button>
-      <h1>Plan (38590) - parcelles</h1>
+      <h1>Mes parcelles - cadastre</h1>
       <div class="sub" id="summary">Chargement du cadastre…</div>
     </header>
     <div id="msg"></div>
@@ -89,13 +89,14 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 /* ============ À MODIFIER ============ */
-const COMMUNE = { nom: 'Plan', insee: '38308' };
+// commune par défaut quand la colonne « commune » est vide
+const DEFAULT_COM = { commune:'Plan', cp:'38590', insee:'38308' };
 
-// Colonnes du CSV : section;numero;lieu_dit;surface_m2;nature
+// Colonnes du CSV : section;numero;commune;code_postal;lieu_dit;surface_m2;nature;code_insee (commune, code postal et code INSEE facultatifs)
 let MES = [];   // la liste est chargée par CSV ou par lien de partage, elle n'est pas écrite dans l'application
 const MES_DEFAUT = MES;
 const CLE_STOCK = 'plan_parcelles_csv';
-try { const s = localStorage.getItem(CLE_STOCK); if (s) { const a = JSON.parse(s); if (Array.isArray(a) && a.length) MES = a; } } catch(e){}
+try { const s = localStorage.getItem(CLE_STOCK); if (s) { const a = JSON.parse(s); if (Array.isArray(a) && a.length) MES = a.map(normParcel); } } catch(e){}
 /* ==================================== */
 
 const NATURES = [
@@ -110,6 +111,14 @@ const NATURES = [
 const natureOf = s => NATURES.find(x => x.test(String(s||'').toUpperCase().trim()));
 const norm = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
 const keyOf = (s,n) => String(s).toUpperCase().trim() + '-' + parseInt(n,10);
+const pkey = p => (p._insee || '?') + '|' + keyOf(p.section, p.numero);   // clé unique : commune + section + numéro
+function normParcel(p){
+  p.commune = String(p.commune || '').trim();
+  p.cp = String(p.cp || '').replace(/\D/g,'').slice(0,5);
+  p.insee = String(p.insee || '').trim();
+  if (!p.commune && !p.cp && !p.insee) { p.commune = DEFAULT_COM.commune; p.cp = DEFAULT_COM.cp; p.insee = DEFAULT_COM.insee; }
+  return p;
+}
 const fmtSurf = m2 => { const h=Math.floor(m2/10000), a=Math.floor((m2%10000)/100), c=m2%100;
   return (h?h+' ha ':'')+(a||h?a+' a ':'')+c+' ca'; };
 const $ = id => document.getElementById(id);
@@ -133,11 +142,16 @@ L.control.layers(baseLayers, null, { collapsed:true }).addTo(map);
 L.control.scale({ imperial:false }).addTo(map);
 
 /* ---------- Données cadastre ---------- */
-let allLayer = null, mineLayer = null;
-const byKey = new Map();           // clé -> {feature, layer(all)}
+let mineLayer = null;
+const geo = new Map();             // code INSEE -> { layer } : une couche par commune, chargée à la demande
+const byKey = new Map();           // 'insee|SEC-num' -> { f, layer }
 let labelsAll = L.layerGroup().addTo(map), labelsMine = L.layerGroup().addTo(map);
 let cadastreFeatures = [];
 const hiddenNat = new Set();
+const communeNames = new Map();    // code INSEE -> nom
+let problems = [];
+const nbCommunes = () => new Set(MES.map(p => p._insee).filter(Boolean)).size;
+const nomCommune = insee => communeNames.get(insee) || insee;
 
 function parseFeature(f){
   const p = f.properties || {};
@@ -156,8 +170,7 @@ async function readGeo(buf){
   return JSON.parse(new TextDecoder().decode(buf));
 }
 
-async function fetchCadastre(){
-  const i = COMMUNE.insee;
+async function fetchCadastre(i){
   const urls = [
     `https://cadastre.data.gouv.fr/bundler/cadastre-etalab/communes/${i}/geojson/parcelles`,
     `https://cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/communes/${i.slice(0,2)}/${i}/cadastre-${i}-parcelles.json.gz`
@@ -175,25 +188,87 @@ async function fetchCadastre(){
 
 function showMsg(txt, err){ const m=$('msg'); m.textContent=txt; m.className=err?'err':''; m.style.display=txt?'block':'none'; }
 
-function buildMap(gj){
-  if (allLayer) map.removeLayer(allLayer);
-  if (mineLayer) map.removeLayer(mineLayer);
-  byKey.clear(); cadastreFeatures = [];
-  // préfixe 000 prioritaire en cas de doublon
+// ajoute (ou remplace) le cadastre d'une commune
+function addCommune(insee, gj){
+  const old = geo.get(insee);
+  if (old){
+    map.removeLayer(old.layer);
+    cadastreFeatures = cadastreFeatures.filter(c => c.insee !== insee);
+    for (const k of [...byKey.keys()]) if (k.startsWith(insee + '|')) byKey.delete(k);
+  }
   const feats = gj.features.filter(f => f.geometry);
   feats.forEach(f => { f._k = parseFeature(f); });
-  allLayer = L.geoJSON(feats, {
+  const layer = L.geoJSON(feats, {
     style: { color:'#fff', weight:.8, opacity:.75, fillOpacity:0, fillColor:'#000' },
-    onEachFeature: (f, layer) => {
-      const k = f._k, key = keyOf(k.sec,k.num);
-      cadastreFeatures.push({ key, k, layer, geom:f.geometry });
-      if (!byKey.has(key) || (f.properties.prefixe||'000')==='000') byKey.set(key, { f, layer });
-      layer.on('click', () => { if(!mineKeys.has(key)) layer.bindPopup(`<b>Section ${k.sec} – n° ${k.num}</b><br>${k.contenance?fmtSurf(k.contenance):''}`).openPopup(); });
+    onEachFeature: (f, l) => {
+      const k = f._k, key = insee + '|' + keyOf(k.sec,k.num);
+      cadastreFeatures.push({ key, k, insee, layer:l, geom:f.geometry });
+      // préfixe 000 prioritaire en cas de doublon
+      if (!byKey.has(key) || (f.properties.prefixe||'000')==='000') byKey.set(key, { f, layer:l });
+      l.on('click', () => { if (!mineKeys.has(key)) l.bindPopup(`<b>${nbCommunes()>1 ? nomCommune(insee)+' · ' : ''}Section ${k.sec} – n° ${k.num}</b><br>${k.contenance?fmtSurf(k.contenance):''}`).openPopup(); });
     }
   }).addTo(map);
-  drawMine();
-  refreshLabels();
+  geo.set(insee, { layer });
+  if (mineLayer) mineLayer.bringToFront();
 }
+
+/* ---------- Recherche du code INSEE d'une commune (nom + code postal) ---------- */
+let inseeCache = {};
+try { inseeCache = JSON.parse(localStorage.getItem('plan_insee_cache') || '{}'); } catch(e){}
+const inseeMemo = new Map();
+const clean = s => norm(s).replace(/[^a-z0-9]+/g,' ').trim();
+async function geoSearch(params){
+  const r = await fetch('https://geo.api.gouv.fr/communes?' + new URLSearchParams({ ...params, fields:'nom,code,codesPostaux', limit:'15' }));
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+async function lookupInsee(p, name, key){
+  let list;
+  if (p.commune){
+    list = await geoSearch(p.cp ? { nom:p.commune, codePostal:p.cp } : { nom:p.commune, codeDepartement:'38' });
+    if (!list.length && !p.cp) list = await geoSearch({ nom:p.commune });
+  } else if (p.cp) list = await geoSearch({ codePostal:p.cp });
+  else return null;
+  const hit = list.find(c => clean(c.nom) === name) || (list.length === 1 ? list[0] : null);
+  if (!hit) return null;
+  inseeCache[key] = hit.code;
+  try { localStorage.setItem('plan_insee_cache', JSON.stringify(inseeCache)); } catch(e){}
+  return hit.code;
+}
+function resolveInsee(p){
+  if (p.insee) return Promise.resolve(p.insee);
+  const name = clean(p.commune);
+  if (name === 'plan' && (!p.cp || p.cp === '38590')) return Promise.resolve('38308');
+  const key = name + '|' + p.cp;
+  if (inseeCache[key]) return Promise.resolve(inseeCache[key]);
+  if (!inseeMemo.has(key)) inseeMemo.set(key, lookupInsee(p, name, key).finally(() => inseeMemo.delete(key)));
+  return inseeMemo.get(key);
+}
+
+// résout les communes de la liste, charge le cadastre des communes manquantes (une seule fois chacune), redessine
+async function refreshAll(){
+  problems = [];
+  const names = new Map(), unknown = new Set();
+  for (const p of MES){
+    let insee = null;
+    try { insee = await resolveInsee(p); }
+    catch(e){ problems.push('Recherche de la commune « ' + (p.commune || p.cp) + ' » impossible (connexion ?).'); }
+    p._insee = insee;
+    if (insee){ if (!names.has(insee)) names.set(insee, p.commune || insee); }
+    else if (!problems.length || p.commune || p.cp) unknown.add(p.commune || p.cp);
+  }
+  if (!MES.length) names.set(DEFAULT_COM.insee, DEFAULT_COM.commune);
+  names.forEach((n,i) => communeNames.set(i, n));
+  const todo = [...names.keys()].filter(i => !geo.has(i));
+  if (todo.length) showMsg('Chargement du cadastre : ' + todo.map(nomCommune).join(', ') + '…', false);
+  const res = await Promise.allSettled(todo.map(async i => addCommune(i, await fetchCadastre(i))));
+  res.forEach((r,k) => { if (r.status === 'rejected') problems.push('Cadastre de ' + nomCommune(todo[k]) + ' non chargé (' + r.reason.message + ').'); });
+  const failedLookup = problems.some(m => m.startsWith('Recherche'));
+  if (!failedLookup) unknown.forEach(n => problems.push('Commune introuvable : « ' + n + ' » (vérifiez le nom et le code postal).'));
+  drawMine();
+}
+let chain = Promise.resolve();
+const refresh = () => (chain = chain.then(refreshAll, refreshAll));
 
 let mineKeys = new Set();
 const corners = L.layerGroup();
@@ -203,17 +278,17 @@ function drawMine(){
   if (mineLayer) { map.removeLayer(mineLayer); mineLayer = null; }
   labelsMine.clearLayers();
   corners.clearLayers();
-  mineKeys = new Set(MES.map(p => keyOf(p.section,p.numero)));
+  mineKeys = new Set(MES.map(pkey));
   const feats = [], missing = [];
   MES.forEach(p => {
-    const hit = byKey.get(keyOf(p.section,p.numero));
+    const hit = byKey.get(pkey(p));
     p._layer = null; p._hit = hit || null; p._verts = null;
     if (!hit) { missing.push(p); return; }
     p._verts = vertsOf(hit.f.geometry);
     p._verts.forEach(v => corners.addLayer(L.circleMarker(v, { radius:3.5, color:'#000', weight:1.5, fillColor:'#fff', fillOpacity:1, interactive:false })));
-    feats.push({ type:'Feature', geometry:hit.f.geometry, properties:{ key:keyOf(p.section,p.numero) } });
+    feats.push({ type:'Feature', geometry:hit.f.geometry, properties:{ key:pkey(p) } });
   });
-  const pByKey = new Map(MES.map(p => [keyOf(p.section,p.numero), p]));
+  const pByKey = new Map(MES.map(p => [pkey(p), p]));
   mineLayer = L.geoJSON(feats, {
     filter: f => !hiddenNat.has(natureOf(pByKey.get(f.properties.key).nature).id),
     style: f => { const c = natureOf(pByKey.get(f.properties.key).nature).color;
@@ -229,18 +304,22 @@ function drawMine(){
     }
   }).addTo(map);
   mineLayer.bringToFront();
-  const nEcarts = MES.filter(p => ecart(p)).length;
+  const nEcarts = MES.filter(p => ecart(p)).length, nCom = nbCommunes();
   const tot = MES.reduce((s,p)=>s+p.surface,0);
   $('summary').textContent = `${MES.length} parcelles · ${(tot/10000).toFixed(2).replace('.',',')} ha`
+    + (nCom > 1 ? ` · ${nCom} communes` : '')
     + (missing.length ? ` · ${missing.length} introuvable(s)` : '')
     + (nEcarts ? ` · ⚠ ${nEcarts} surface(s) différente(s) du cadastre` : '');
-  if (missing.length) showMsg('Introuvables dans le cadastre : ' + missing.map(p=>p.section+' '+p.numero).join(', ')
-    + '. Vérifiez la section et le numéro (ou la commune).', true);
-  else showMsg('', false);
+  const msgs = [...new Set(problems)];
+  // les parcelles d'une commune non chargée / inconnue sont déjà expliquées plus haut : on ne liste que les autres
+  const lost = missing.filter(p => p._insee && geo.has(p._insee));
+  if (lost.length) msgs.push('Introuvables dans le cadastre : ' + lost.slice(0,15).map(p => p.section + ' ' + p.numero + (nCom > 1 ? ' (' + p.commune + ')' : '')).join(', ')
+    + (lost.length > 15 ? '…' : '') + '. Vérifiez la section et le numéro (ou la commune).');
+  showMsg(msgs.join(' '), msgs.length > 0);
   renderList(missing);
   renderLegend();
   if (feats.length && !map._fitted){ map.fitBounds(mineLayer.getBounds().pad(.1)); map._fitted = true; }
-  else if (!feats.length && !map._fitted && allLayer){ map.fitBounds(allLayer.getBounds()); map._fitted = true; }
+  else if (!feats.length && !map._fitted && geo.size){ map.fitBounds([...geo.values()][0].layer.getBounds()); map._fitted = true; }
   if (!MES.length) showMsg('Aucune parcelle pour l\'instant. Ouvrez le lien de partage reçu, ou chargez un CSV (Outils → Charger un CSV).', false);
   refreshLabels();
 }
@@ -252,7 +331,7 @@ function ecart(p){
 }
 function popupHtml(p){
   const cad = ecart(p);
-  let s = `<b>Section ${p.section} – n° ${p.numero}</b><br>${p.lieudit}<br>${p.nature}<br>Surface (ma liste) : ${fmtSurf(p.surface)}`;
+  let s = `<b>Section ${p.section} – n° ${p.numero}</b><br>${p.lieudit}${nbCommunes()>1 ? ' · ' + p.commune : ''}<br>${p.nature}<br>Surface (ma liste) : ${fmtSurf(p.surface)}`;
   if (cad) s += `<br><b style="color:#b3261e">⚠ cadastre : ${fmtSurf(cad)}</b>`;
   return s;
 }
@@ -294,17 +373,18 @@ function renderLegend(){
 
 function renderList(missing){
   const q = norm($('q').value);
-  const miss = new Set((missing||MES.filter(p=>!p._hit)).map(p=>keyOf(p.section,p.numero)));
-  const rows = MES.filter(p => !q || norm(`${p.section} ${p.numero} ${p.section}${p.numero} ${p.lieudit} ${p.nature}`).includes(q))
-    .sort((a,b)=> a.lieudit.localeCompare(b.lieudit,'fr') || a.section.localeCompare(b.section) || a.numero-b.numero);
+  const miss = new Set((missing||MES.filter(p=>!p._hit)).map(pkey));
+  const multi = nbCommunes() > 1;
+  const rows = MES.filter(p => !q || norm(`${p.section} ${p.numero} ${p.section}${p.numero} ${p.lieudit} ${p.nature} ${p.commune} ${p.cp}`).includes(q))
+    .sort((a,b)=> (multi ? (a.commune||'').localeCompare(b.commune||'','fr') : 0) || a.lieudit.localeCompare(b.lieudit,'fr') || a.section.localeCompare(b.section) || a.numero-b.numero);
   $('list').innerHTML = rows.map((p,i) => {
     const n = natureOf(p.nature);
-    return `<div class="it ${miss.has(keyOf(p.section,p.numero))?'miss':''}" data-k="${keyOf(p.section,p.numero)}">
+    return `<div class="it ${miss.has(pkey(p))?'miss':''}" data-k="${pkey(p)}">
       <span class="dot" style="background:${n.color};margin-top:5px"></span>
-      <div><b>${p.section} ${p.numero}</b> <small>${p.lieudit}</small><br><small>${p.nature.toLowerCase()} · ${fmtSurf(p.surface)}</small>${ecart(p)?`<br><small style="color:#b3261e"><b>⚠ cadastre : ${fmtSurf(ecart(p))}</b></small>`:''}</div></div>`;
+      <div><b>${p.section} ${p.numero}</b> <small>${p.lieudit}${multi ? ' · ' + p.commune : ''}</small><br><small>${p.nature.toLowerCase()} · ${fmtSurf(p.surface)}</small>${ecart(p)?`<br><small style="color:#b3261e"><b>⚠ cadastre : ${fmtSurf(ecart(p))}</b></small>`:''}</div></div>`;
   }).join('') || '<div class="it"><small>Aucune parcelle dans la liste.</small></div>';
   $('list').querySelectorAll('.it[data-k]').forEach(el => el.onclick = () => {
-    const p = MES.find(x => keyOf(x.section,x.numero) === el.dataset.k);
+    const p = MES.find(x => pkey(x) === el.dataset.k);
     if (p && p._layer){
       map.fitBounds(p._layer.getBounds().pad(.6), { maxZoom:18 });
       p._layer.openPopup(p._layer.getBounds().getCenter());
@@ -323,18 +403,18 @@ function parseCSV(text){
   const head = lines[0].split(sep).map(norm);
   const col = f => head.findIndex(f);
   const iS = col(h=>h.startsWith('section')), iN = col(h=>h.startsWith('num')||h.includes('parcelle')),
-        iL = col(h=>h.includes('lieu')), iM = col(h=>h.includes('m2')||h.includes('surface')), iT = col(h=>h.includes('nature'));
+        iL = col(h=>h.includes('lieu')), iM = col(h=>h.includes('m2')||h.includes('surface')), iT = col(h=>h.includes('nature')),
+        iC = col(h=>h.startsWith('commune')), iP = col(h=>h.includes('postal')||h==='cp'), iI = col(h=>h.includes('insee'));
   if (iS<0 || iN<0) throw new Error('Colonnes "section" et "numero" introuvables');
   return lines.slice(1).map(l => { const c = l.split(sep).map(x=>x.trim());
-    return { section:c[iS], numero:parseInt(c[iN],10), lieudit:iL>=0?c[iL]:'', surface:iM>=0?parseInt(c[iM],10)||0:0, nature:iT>=0?c[iT]:'' };
+    return normParcel({ section:c[iS], numero:parseInt(c[iN],10), commune:iC>=0?c[iC]:'', cp:iP>=0?c[iP]:'', insee:iI>=0?c[iI]:'',
+      lieudit:iL>=0?c[iL]:'', surface:iM>=0?parseInt(c[iM],10)||0:0, nature:iT>=0?c[iT]:'' });
   }).filter(p => p.section && p.numero);
 }
 $('csvfile').onchange = async e => {
   try {
-    MES = parseCSV(await e.target.files[0].text()); map._fitted = false; drawMine();
-    let saved = true;
-    try { localStorage.setItem(CLE_STOCK, JSON.stringify(MES.map(p => ({ section:p.section, numero:p.numero, lieudit:p.lieudit, surface:p.surface, nature:p.nature })))); }
-    catch(e2){ saved = false; }
+    MES = parseCSV(await e.target.files[0].text()); map._fitted = false; await refresh();
+    const saved = saveList();
     if ($('msg').style.display === 'none')
       showMsg(MES.length + ' parcelles chargées' + (saved ? ' et mémorisées sur cet appareil.' : ' (mémorisation impossible dans ce navigateur).'), false);
   } catch(err){ showMsg('CSV illisible : '+err.message, true); }
@@ -343,10 +423,15 @@ $('csvfile').onchange = async e => {
 $('resetlist').onclick = () => {
   if (MES.length && !confirm('Vider la liste de parcelles de cet appareil ?')) return;
   try { localStorage.removeItem(CLE_STOCK); } catch(e){}
-  MES = MES_DEFAUT; map._fitted = false; drawMine();
+  MES = MES_DEFAUT; map._fitted = false; refresh();
 };
 $('gjfile').onchange = async e => {
-  try { buildMap(await readGeo(await e.target.files[0].arrayBuffer())); }
+  try {
+    const gj = await readGeo(await e.target.files[0].arrayBuffer());
+    const insee = String(gj.features[0].properties.id).slice(0,5);
+    addCommune(insee, gj); if (!communeNames.has(insee)) communeNames.set(insee, insee);
+    await refresh();
+  }
   catch(err){ showMsg('Fichier cadastre illisible : '+err.message, true); }
 };
 
@@ -380,7 +465,7 @@ function onPos(pos){
     if (!c.layer.getBounds().contains(ll)) continue;
     if (inGeom(c.geom, lng, lat)) { here = c; break; }
   }
-  const mine = here && MES.find(p => keyOf(p.section,p.numero) === here.key);
+  const mine = here && MES.find(p => pkey(p) === here.key);
   // angle (borne probable) le plus proche : dans ma parcelle, sinon parmi toutes mes parcelles
   const cand = mine ? [mine] : MES.filter(p => p._verts);
   let best = null;
@@ -388,7 +473,7 @@ function onPos(pos){
     const d = ll.distanceTo(v); if (!best || d < best.d) best = { d, v, p };
   }
   let l1 = '±' + Math.round(accuracy) + ' m · ' + (here
-    ? 'Sur ' + here.k.sec + ' ' + here.k.num + (mine ? ' ★ ' + mine.lieudit.toLowerCase() : ' (pas à nous)')
+    ? 'Sur ' + (nbCommunes() > 1 ? nomCommune(here.insee) + ' ' : '') + here.k.sec + ' ' + here.k.num + (mine ? ' ★ ' + mine.lieudit.toLowerCase() : ' (pas à nous)')
     : 'Hors cadastre');
   let l2 = '';
   if (best){
@@ -424,8 +509,9 @@ new GeoCtl({ position:'topleft' }).addTo(map);
 $('gps').onclick = () => { if (lastLL) map.setView(lastLL, Math.max(map.getZoom(), 18)); };
 
 /* ---------- Export, partage, hors-ligne ---------- */
-const toCSV = () => 'section;numero;lieu_dit;surface_m2;nature\n' + MES.map(p =>
-  [p.section, p.numero, String(p.lieudit).replace(/;/g,','), p.surface, String(p.nature).replace(/;/g,',')].join(';')).join('\n') + '\n';
+const cleanP = p => ({ section:p.section, numero:p.numero, commune:p.commune, cp:p.cp, insee:p.insee || p._insee || '', lieudit:p.lieudit, surface:p.surface, nature:p.nature });
+const toCSV = () => 'section;numero;commune;code_postal;lieu_dit;surface_m2;nature;code_insee\n' + MES.map(cleanP).map(p =>
+  [p.section, p.numero, p.commune, p.cp, p.lieudit, p.surface, p.nature, p.insee].map(x => String(x).replace(/;/g,',')).join(';')).join('\n') + '\n';
 const b64u = u8 => { let s=''; u8.forEach(b => s += String.fromCharCode(b)); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); };
 async function packList(){
   const cs = new Blob([toCSV()]).stream().pipeThrough(new CompressionStream('deflate-raw'));
@@ -437,7 +523,7 @@ async function unpackList(s){
   return new Response(ds).text();
 }
 function saveList(){
-  try { localStorage.setItem(CLE_STOCK, JSON.stringify(MES.map(p => ({ section:p.section, numero:p.numero, lieudit:p.lieudit, surface:p.surface, nature:p.nature })))); return true; }
+  try { localStorage.setItem(CLE_STOCK, JSON.stringify(MES.map(cleanP))); return true; }
   catch(e){ return false; }
 }
 async function loadFromHash(){
@@ -456,7 +542,7 @@ $('exportcsv').onclick = () => {
 $('sharelink').onclick = async () => {
   if (!MES.length) return showMsg('La liste est vide : rien à partager.', true);
   const url = location.origin + location.pathname + '#d=' + await packList();
-  try { if (navigator.share) { await navigator.share({ title:'Parcelles de Plan', text:'Ouvrir pour charger la liste des parcelles :', url }); return; } } catch(e){ if (e.name === 'AbortError') return; }
+  try { if (navigator.share) { await navigator.share({ title:'Mes parcelles', text:'Ouvrir pour charger la liste des parcelles :', url }); return; } } catch(e){ if (e.name === 'AbortError') return; }
   try { await navigator.clipboard.writeText(url); showMsg('Lien copié. Il contient la liste des parcelles : ne l\'envoyez qu\'à la famille.', false); }
   catch(e){ prompt('Copiez ce lien (il contient la liste des parcelles) :', url); }
 };
@@ -466,18 +552,20 @@ const tileXY = (lat, lng, z) => { const n = 2**z, r = lat*Math.PI/180;
 $('offline').onclick = async () => {
   if (curBase === 'OpenStreetMap') return showMsg('Choisissez la photo aérienne ou le plan IGN (le téléchargement en masse n\'est pas permis pour OpenStreetMap).', true);
   if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return showMsg('Le mode hors-ligne n\'est pas encore actif : rechargez la page une fois (en https), puis réessayez.', true);
-  const pts = MES.flatMap(p => p._verts || []);
-  let s, w, n, e;
-  if (pts.length){ s = Math.min(...pts.map(v=>v.lat)); n = Math.max(...pts.map(v=>v.lat)); w = Math.min(...pts.map(v=>v.lng)); e = Math.max(...pts.map(v=>v.lng)); }
-  else { const b = map.getBounds(); s = b.getSouth(); n = b.getNorth(); w = b.getWest(); e = b.getEast(); }
-  const pad = 0.0015; s -= pad; w -= pad; n += pad; e += pad;
-  const count = zs => zs.reduce((acc,z) => { const [x0,y1] = tileXY(s,w,z), [x1,y0] = tileXY(n,e,z); return acc + (x1-x0+1)*(y1-y0+1); }, 0);
+  const pad = 0.0015;
+  const boxes = MES.filter(p => p._verts && p._verts.length).map(p => { const la = p._verts.map(v=>v.lat), ln = p._verts.map(v=>v.lng);
+    return [Math.min(...la)-pad, Math.min(...ln)-pad, Math.max(...la)+pad, Math.max(...ln)+pad]; });
+  if (!boxes.length){ const b = map.getBounds(); boxes.push([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]); }
+  const tileSet = z => { const set = new Map();
+    for (const [s,w,n,e] of boxes){ const [x0,y1] = tileXY(s,w,z), [x1,y0] = tileXY(n,e,z);
+      for (let x=x0; x<=x1; x++) for (let y=y0; y<=y1; y++) set.set(x+'/'+y, [x,y]); }
+    return set; };
+  const count = zs => zs.reduce((acc,z) => acc + tileSet(z).size, 0);
   let zs = [15,16,17,18]; if (count(zs) > 5000) zs = [15,16,17];
   const total = count(zs);
   if (!confirm(`Télécharger ${total} tuiles (environ ${Math.round(total*(curBase.startsWith('Photo')?28:12)/1024)} Mo) pour « ${curBase} » autour de vos parcelles, zooms ${zs[0]} à ${zs[zs.length-1]} ?`)) return;
   const urls = [];
-  for (const z of zs){ const [x0,y1] = tileXY(s,w,z), [x1,y0] = tileXY(n,e,z);
-    for (let x=x0; x<=x1; x++) for (let y=y0; y<=y1; y++) urls.push(TPL[curBase].replace('{z}',z).replace('{x}',x).replace('{y}',y)); }
+  for (const z of zs) for (const [x,y] of tileSet(z).values()) urls.push(TPL[curBase].replace('{z}',z).replace('{x}',x).replace('{y}',y));
   let done = 0, fail = 0, i = 0;
   const worker = async () => { while (i < urls.length){ const u = urls[i++];
     try { const r = await fetch(u); if (!r.ok) fail++; } catch(e){ fail++; }
@@ -493,14 +581,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 }
 (async () => {
   await loadFromHash();
-  let gj;
-  try { gj = await fetchCadastre(); }
-  catch(err){
-    $('summary').textContent = 'Cadastre non chargé';
-    showMsg('Impossible de télécharger le cadastre de '+COMMUNE.nom+' ('+err.message+'). Vérifiez la connexion (le cadastre est mémorisé après un premier chargement réussi).', true);
-    renderList([]); renderLegend(); return;
-  }
-  try { buildMap(gj); } catch(err){ console.error(err); showMsg('Erreur d\'affichage : '+err.message, true); }
+  try { await refresh(); } catch(err){ console.error(err); showMsg('Erreur d\'affichage : '+err.message, true); }
 })();
 </script>
 </body>
