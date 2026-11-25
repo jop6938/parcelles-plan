@@ -17,20 +17,22 @@
   *{box-sizing:border-box}
   html,body{height:100%;margin:0;font:15px/1.4 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
   #app{display:flex;height:100%}
-  #panel{width:350px;max-width:100%;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);z-index:500}
+  #panel{width:350px;max-width:100%;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);z-index:500;overflow-y:auto}
   #map{flex:1;min-width:0}
-  header{padding:12px 14px 8px;border-bottom:1px solid var(--line)}
+  header{padding:8px 14px 6px;border-bottom:1px solid var(--line)}
   h1{font-size:17px;margin:0 0 2px}
   .sub{color:var(--muted);font-size:13px}
-  #tools{padding:8px 14px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
-  #tools input[type=search]{flex:1 1 100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font:inherit}
+  #tools{padding:6px 14px;display:flex;gap:5px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+  #tools input[type=search]{flex:1 1 100%;padding:5px 9px;border:1px solid var(--line);border-radius:8px;font:inherit}
   .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border:1px solid var(--line);border-radius:99px;font-size:12.5px;cursor:pointer;background:#fff;user-select:none}
   .chip.off{opacity:.4}
   .chip.on{background:#e8f1e6;border-color:#2e6b3a;font-weight:600}
-  #locsel{flex:1 1 100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+  #locsel{flex:1 1 100%;padding:4px 8px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
   #totals{flex:1 1 100%;font-weight:600;color:var(--fg)}
   .dot{width:11px;height:11px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.25)}
-  #list{flex:1;overflow:auto}
+  #list{flex:1 1 auto;min-height:170px;overflow:auto}
+  #legend{display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;flex:1 1 100%;padding-bottom:2px}
+  .chip{flex:none}
   .it{padding:8px 14px;border-bottom:1px solid #eee9de;cursor:pointer;display:flex;gap:9px;align-items:flex-start}
   .it:hover{background:#f2efe6}
   .it b{white-space:nowrap}
@@ -50,7 +52,7 @@
   .lbl.mine{background:#fff;border:2px solid #111;font-size:12.5px;line-height:17px;color:#000}
   @media (max-width:760px){
     #app{flex-direction:column-reverse}
-    #panel{width:100%;height:42vh;border-right:0;border-top:1px solid var(--line)}
+    #panel{width:100%;height:50vh;border-right:0;border-top:1px solid var(--line)}
     #app.collapsed #panel{height:46px;overflow:hidden}
     #toggle{display:block;position:absolute;right:10px;top:8px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:2px 9px;font:inherit}
     header{position:relative;padding-right:60px}
