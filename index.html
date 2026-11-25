@@ -26,6 +26,9 @@
   #tools input[type=search]{flex:1 1 100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font:inherit}
   .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border:1px solid var(--line);border-radius:99px;font-size:12.5px;cursor:pointer;background:#fff;user-select:none}
   .chip.off{opacity:.4}
+  .chip.on{background:#e8f1e6;border-color:#2e6b3a;font-weight:600}
+  #locsel{flex:1 1 100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+  #totals{flex:1 1 100%;font-weight:600;color:var(--fg)}
   .dot{width:11px;height:11px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.25)}
   #list{flex:1;overflow:auto}
   .it{padding:8px 14px;border-bottom:1px solid #eee9de;cursor:pointer;display:flex;gap:9px;align-items:flex-start}
@@ -65,7 +68,9 @@
     <div id="msg"></div>
     <div id="tools">
       <input type="search" id="q" placeholder="Rechercher : A 664, Adret, pré…">
+      <select id="locsel" hidden title="Filtrer par locataire"></select>
       <span id="legend"></span>
+      <div id="totals" class="sub"></div>
     </div>
     <div id="list"></div>
     <footer>
@@ -92,7 +97,8 @@
 // commune par défaut quand la colonne « commune » est vide
 const DEFAULT_COM = { commune:'Plan', cp:'38590', insee:'38308' };
 
-// Colonnes du CSV : section;numero;commune;code_postal;lieu_dit;surface_m2;nature;code_insee (commune, code postal et code INSEE facultatifs)
+// Colonnes du CSV : section;numero;commune;code_postal;lieu_dit;surface_m2;nature;code_insee;locataire
+// (commune, code postal, code INSEE et locataire facultatifs ; locataire vide = non louée)
 let MES = [];   // la liste est chargée par CSV ou par lien de partage, elle n'est pas écrite dans l'application
 const MES_DEFAUT = MES;
 const CLE_STOCK = 'plan_parcelles_csv';
@@ -116,6 +122,7 @@ function normParcel(p){
   p.commune = String(p.commune || '').trim();
   p.cp = String(p.cp || '').replace(/\D/g,'').slice(0,5);
   p.insee = String(p.insee || '').trim();
+  p.locataire = String(p.locataire || '').trim();
   if (!p.commune && !p.cp && !p.insee) { p.commune = DEFAULT_COM.commune; p.cp = DEFAULT_COM.cp; p.insee = DEFAULT_COM.insee; }
   return p;
 }
@@ -147,7 +154,15 @@ const geo = new Map();             // code INSEE -> { layer } : une couche par c
 const byKey = new Map();           // 'insee|SEC-num' -> { f, layer }
 let labelsAll = L.layerGroup().addTo(map), labelsMine = L.layerGroup().addTo(map);
 let cadastreFeatures = [];
-const hiddenNat = new Set();
+const hiddenNat = new Set();       // (inutilisé : remplacé par selNat)
+const selNat = new Set();          // natures choisies (vide = toutes)
+let selLoc = '';                   // '' = tous ; '__loue' ; '__libre' ; sinon clé du locataire
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const locKey = p => norm(p.locataire).replace(/\s+/g,' ').trim();
+const natOk = p => selNat.size === 0 || selNat.has(natureOf(p.nature).id);
+const locOk = p => selLoc === '' || (selLoc === '__loue' ? !!locKey(p) : selLoc === '__libre' ? !locKey(p) : locKey(p) === selLoc);
+const visible = p => natOk(p) && locOk(p);
+const fmtHa = m2 => (m2/10000).toFixed(2).replace('.',',') + ' ha';
 const communeNames = new Map();    // code INSEE -> nom
 let problems = [];
 const nbCommunes = () => new Set(MES.map(p => p._insee).filter(Boolean)).size;
@@ -285,12 +300,12 @@ function drawMine(){
     p._layer = null; p._hit = hit || null; p._verts = null;
     if (!hit) { missing.push(p); return; }
     p._verts = vertsOf(hit.f.geometry);
+    if (!visible(p)) return;
     p._verts.forEach(v => corners.addLayer(L.circleMarker(v, { radius:3.5, color:'#000', weight:1.5, fillColor:'#fff', fillOpacity:1, interactive:false })));
     feats.push({ type:'Feature', geometry:hit.f.geometry, properties:{ key:pkey(p) } });
   });
   const pByKey = new Map(MES.map(p => [pkey(p), p]));
   mineLayer = L.geoJSON(feats, {
-    filter: f => !hiddenNat.has(natureOf(pByKey.get(f.properties.key).nature).id),
     style: f => { const c = natureOf(pByKey.get(f.properties.key).nature).color;
       return { color:c, weight:2.5, opacity:1, fillColor:c, fillOpacity:.5 }; },
     onEachFeature: (f, layer) => {
@@ -318,6 +333,7 @@ function drawMine(){
   showMsg(msgs.join(' '), msgs.length > 0);
   renderList(missing);
   renderLegend();
+  renderFilters();
   if (feats.length && !map._fitted){ map.fitBounds(mineLayer.getBounds().pad(.1)); map._fitted = true; }
   else if (!feats.length && !map._fitted && geo.size){ map.fitBounds([...geo.values()][0].layer.getBounds()); map._fitted = true; }
   if (!MES.length) showMsg('Aucune parcelle pour l\'instant. Ouvrez le lien de partage reçu, ou chargez un CSV (Outils → Charger un CSV).', false);
@@ -331,7 +347,7 @@ function ecart(p){
 }
 function popupHtml(p){
   const cad = ecart(p);
-  let s = `<b>Section ${p.section} – n° ${p.numero}</b><br>${p.lieudit}${nbCommunes()>1 ? ' · ' + p.commune : ''}<br>${p.nature}<br>Surface (ma liste) : ${fmtSurf(p.surface)}`;
+  let s = `<b>Section ${p.section} – n° ${p.numero}</b><br>${p.lieudit}${nbCommunes()>1 ? ' · ' + p.commune : ''}<br>${p.nature}<br>Surface (ma liste) : ${fmtSurf(p.surface)}${p.locataire ? '<br>Loué à : <b>' + esc(p.locataire) + '</b>' : ''}`;
   if (cad) s += `<br><b style="color:#b3261e">⚠ cadastre : ${fmtSurf(cad)}</b>`;
   return s;
 }
@@ -363,26 +379,51 @@ map.on('zoomend moveend', refreshLabels);
 /* ---------- Panneau ---------- */
 function renderLegend(){
   const used = [...new Set(MES.map(p => natureOf(p.nature).id))];
+  [...selNat].forEach(id => { if (!used.includes(id)) selNat.delete(id); });
   $('legend').innerHTML = NATURES.filter(n => used.includes(n.id)).map(n =>
-    `<span class="chip ${hiddenNat.has(n.id)?'off':''}" data-n="${n.id}"><span class="dot" style="background:${n.color}"></span>${n.label}</span>`).join(' ');
+    `<span class="chip ${selNat.has(n.id)?'on':(selNat.size?'off':'')}" data-n="${n.id}"><span class="dot" style="background:${n.color}"></span>${n.label}</span>`).join(' ');
   $('legend').querySelectorAll('.chip').forEach(ch => ch.onclick = () => {
-    const id = ch.dataset.n; hiddenNat.has(id) ? hiddenNat.delete(id) : hiddenNat.add(id);
-    drawMine();
+    const id = ch.dataset.n; selNat.has(id) ? selNat.delete(id) : selNat.add(id);
+    drawMine(); fitToVisible();
   });
 }
+
+// menu des locataires + total de la sélection (tient compte des natures choisies)
+function renderFilters(){
+  const sel = $('locsel');
+  const groups = new Map();
+  MES.forEach(p => { const k = locKey(p); if (k && !groups.has(k)) groups.set(k, p.locataire); });
+  if (!groups.size){ sel.hidden = true; selLoc = ''; }
+  else {
+    if (selLoc && !['__loue','__libre'].includes(selLoc) && !groups.has(selLoc)) selLoc = '';
+    const sum = f => MES.filter(p => natOk(p) && f(p)).reduce((s,p) => s + p.surface, 0);
+    const opt = (v, label, m2) => `<option value="${esc(v)}"${v === selLoc ? ' selected' : ''}>${esc(label)} · ${fmtHa(m2)}</option>`;
+    sel.innerHTML = opt('', 'Tous les locataires', sum(() => true))
+      + opt('__loue', 'Loué (tous locataires)', sum(p => locKey(p)))
+      + opt('__libre', 'Non loué', sum(p => !locKey(p)))
+      + [...groups].sort((a,b) => a[1].localeCompare(b[1],'fr')).map(([k,name]) => opt(k, name, sum(p => locKey(p) === k))).join('');
+    sel.hidden = false;
+  }
+  const shown = MES.filter(visible), m2 = shown.reduce((s,p) => s + p.surface, 0);
+  $('totals').textContent = (selLoc || selNat.size ? 'Sélection : ' : 'Total : ') + shown.length + ' parcelle' + (shown.length > 1 ? 's' : '') + ' · ' + fmtHa(m2);
+}
+function fitToVisible(){
+  try { if (mineLayer && mineLayer.getBounds().isValid()) map.fitBounds(mineLayer.getBounds().pad(.1)); } catch(e){}
+}
+$('locsel').onchange = e => { selLoc = e.target.value; drawMine(); fitToVisible(); };
 
 function renderList(missing){
   const q = norm($('q').value);
   const miss = new Set((missing||MES.filter(p=>!p._hit)).map(pkey));
   const multi = nbCommunes() > 1;
-  const rows = MES.filter(p => !q || norm(`${p.section} ${p.numero} ${p.section}${p.numero} ${p.lieudit} ${p.nature} ${p.commune} ${p.cp}`).includes(q))
+  const rows = MES.filter(p => visible(p) && (!q || norm(`${p.section} ${p.numero} ${p.section}${p.numero} ${p.lieudit} ${p.nature} ${p.commune} ${p.cp} ${p.locataire}`).includes(q)))
     .sort((a,b)=> (multi ? (a.commune||'').localeCompare(b.commune||'','fr') : 0) || a.lieudit.localeCompare(b.lieudit,'fr') || a.section.localeCompare(b.section) || a.numero-b.numero);
   $('list').innerHTML = rows.map((p,i) => {
     const n = natureOf(p.nature);
     return `<div class="it ${miss.has(pkey(p))?'miss':''}" data-k="${pkey(p)}">
       <span class="dot" style="background:${n.color};margin-top:5px"></span>
-      <div><b>${p.section} ${p.numero}</b> <small>${p.lieudit}${multi ? ' · ' + p.commune : ''}</small><br><small>${p.nature.toLowerCase()} · ${fmtSurf(p.surface)}</small>${ecart(p)?`<br><small style="color:#b3261e"><b>⚠ cadastre : ${fmtSurf(ecart(p))}</b></small>`:''}</div></div>`;
-  }).join('') || '<div class="it"><small>Aucune parcelle dans la liste.</small></div>';
+      <div><b>${p.section} ${p.numero}</b> <small>${p.lieudit}${multi ? ' · ' + p.commune : ''}</small><br><small>${p.nature.toLowerCase()} · ${fmtSurf(p.surface)}${p.locataire ? ' · loué à ' + esc(p.locataire) : ''}</small>${ecart(p)?`<br><small style="color:#b3261e"><b>⚠ cadastre : ${fmtSurf(ecart(p))}</b></small>`:''}</div></div>`;
+  }).join('') || '<div class="it"><small>Aucune parcelle.</small></div>';
   $('list').querySelectorAll('.it[data-k]').forEach(el => el.onclick = () => {
     const p = MES.find(x => pkey(x) === el.dataset.k);
     if (p && p._layer){
@@ -404,10 +445,11 @@ function parseCSV(text){
   const col = f => head.findIndex(f);
   const iS = col(h=>h.startsWith('section')), iN = col(h=>h.startsWith('num')||h.includes('parcelle')),
         iL = col(h=>h.includes('lieu')), iM = col(h=>h.includes('m2')||h.includes('surface')), iT = col(h=>h.includes('nature')),
-        iC = col(h=>h.startsWith('commune')), iP = col(h=>h.includes('postal')||h==='cp'), iI = col(h=>h.includes('insee'));
+        iC = col(h=>h.startsWith('commune')), iP = col(h=>h.includes('postal')||h==='cp'), iI = col(h=>h.includes('insee')),
+        iLoc = col(h=>/^(locataire|loueur|fermier|exploitant|preneur)/.test(h));
   if (iS<0 || iN<0) throw new Error('Colonnes "section" et "numero" introuvables');
   return lines.slice(1).map(l => { const c = l.split(sep).map(x=>x.trim());
-    return normParcel({ section:c[iS], numero:parseInt(c[iN],10), commune:iC>=0?c[iC]:'', cp:iP>=0?c[iP]:'', insee:iI>=0?c[iI]:'',
+    return normParcel({ section:c[iS], numero:parseInt(c[iN],10), commune:iC>=0?c[iC]:'', cp:iP>=0?c[iP]:'', insee:iI>=0?c[iI]:'', locataire:iLoc>=0?c[iLoc]:'',
       lieudit:iL>=0?c[iL]:'', surface:iM>=0?parseInt(c[iM],10)||0:0, nature:iT>=0?c[iT]:'' });
   }).filter(p => p.section && p.numero);
 }
@@ -509,9 +551,9 @@ new GeoCtl({ position:'topleft' }).addTo(map);
 $('gps').onclick = () => { if (lastLL) map.setView(lastLL, Math.max(map.getZoom(), 18)); };
 
 /* ---------- Export, partage, hors-ligne ---------- */
-const cleanP = p => ({ section:p.section, numero:p.numero, commune:p.commune, cp:p.cp, insee:p.insee || p._insee || '', lieudit:p.lieudit, surface:p.surface, nature:p.nature });
-const toCSV = () => 'section;numero;commune;code_postal;lieu_dit;surface_m2;nature;code_insee\n' + MES.map(cleanP).map(p =>
-  [p.section, p.numero, p.commune, p.cp, p.lieudit, p.surface, p.nature, p.insee].map(x => String(x).replace(/;/g,',')).join(';')).join('\n') + '\n';
+const cleanP = p => ({ section:p.section, numero:p.numero, commune:p.commune, cp:p.cp, insee:p.insee || p._insee || '', lieudit:p.lieudit, surface:p.surface, nature:p.nature, locataire:p.locataire || '' });
+const toCSV = () => 'section;numero;commune;code_postal;lieu_dit;surface_m2;nature;code_insee;locataire\n' + MES.map(cleanP).map(p =>
+  [p.section, p.numero, p.commune, p.cp, p.lieudit, p.surface, p.nature, p.insee, p.locataire].map(x => String(x).replace(/;/g,',')).join(';')).join('\n') + '\n';
 const b64u = u8 => { let s=''; u8.forEach(b => s += String.fromCharCode(b)); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); };
 async function packList(){
   const cs = new Blob([toCSV()]).stream().pipeThrough(new CompressionStream('deflate-raw'));
